@@ -1,4 +1,4 @@
-alias: Play Music
+alias: Play Music (test)
 description: ""
 triggers:
   - trigger: conversation
@@ -15,6 +15,7 @@ triggers:
       - play music on {area}
       - play {playlist} on {area}
       - play {playlist} music on {area}
+conditions: []
 actions:
   - variables:
       convo_text: |
@@ -26,13 +27,17 @@ actions:
           )
         }}
       area_spoken_raw: "{{ trigger.slots.area | default('') }}"
-      area_guess_from_phrase: >
+      area_guess_from_phrase: >-
         {% set cmd = (convo_text | lower) %} {% set hits = cmd |
         regex_findall('(?:^|\\s)(?:in|on)\\s+(?:the\\s+)?([a-z0-9
         _-]+?)(?=[.!?,]|$)') %} {{ (hits | first) | default('') }}
-      area_spoken: >
-        {% set a = area_spoken_raw | trim %} {% if a %}{{ a }} {% elif
-        area_guess_from_phrase | trim %}{{ area_guess_from_phrase }} {% else
+      area_requested_raw: "{{ (area_spoken_raw | trim) or (area_guess_from_phrase | trim) }}"
+      area_requested_flag: >-
+        {{ (area_spoken_raw | trim) != '' or (area_guess_from_phrase | trim) !=
+        '' }}
+      area_spoken: >-
+        {% set a = area_spoken_raw | trim %} {% if a %}{{ a }}{% elif
+        area_guess_from_phrase | trim %}{{ area_guess_from_phrase }}{% else
         %}Kitchen{% endif %}
       area_aliases: |
         {{
@@ -46,7 +51,7 @@ actions:
             "house": ["Kitchen","Living Room"]
           }
         }}
-      area_normalized: |
+      area_normalized: |-
         {% set raw = area_spoken | lower %} {{
           raw
           | replace(' the ', ' ')
@@ -59,7 +64,7 @@ actions:
           | replace(', ', ',')
           | trim(',')
         }}
-      area_names: >
+      area_names: >-
         {% set aliases = area_aliases %} {% set keys =
         area_normalized.split(',') | map('trim') | reject('equalto','') | list
         %} {% set matches = [] %} {% for k in keys %}
@@ -71,7 +76,7 @@ actions:
         {% else %}
           {{ matches | unique | list }}
         {% endif %}
-      area_ids_resolved: >
+      area_ids_resolved: >-
         {% set ids = area_names | map('area_id') | reject('equalto', None) |
         list %} {% if ids | count == 0 %}
           {% set fallback = area_id('Kitchen') %}
@@ -79,17 +84,14 @@ actions:
         {% else %}
           {{ ids }}
         {% endif %}
-      raw_playlist: "{{ trigger.slots.playlist | default(convo_text) }}"
-      playlist_key: >
-        {% set s = (raw_playlist | lower) %} {% set s = s |
-        regex_replace('\\s+(?:in|on)\\s+.*$', '') %} {{
-          s
-            | replace(' playlist','')
-            | replace(' music','')
-            | replace(' the ',' ')
-            | replace("'", '')
-            | trim
-        }}
+      search_query: >-
+        {% set s = (convo_text | lower) %} {% set s = s |
+        regex_replace('\\s+(?:in|on)\\s+.*$', '') %} {{ s | replace(' play ', '
+        ') | replace('play ', '') | replace(' music','') | replace('
+        playlist','') | trim }}
+      playlist_key: >-
+        {% set s = (search_query | lower) %} {{ s | replace(' the ',' ') |
+        replace("'", '') | trim }}
       playlist_catalog:
         - name: Liked from Radio
           aliases:
@@ -135,7 +137,7 @@ actions:
             - twenty tens
             - two thousand tens
             - two thousand ten
-      resolved_playlist: >
+      resolved_playlist: >-
         {% set default = "Liked from Radio" %} {% set key = playlist_key %} {%
         set found = (playlist_catalog
             | selectattr('aliases','contains', key)
@@ -155,21 +157,208 @@ actions:
           } %}
           {{ decade_map.get(key, default) }}
         {% endif %}
+      ma_config_entry_id: 01K3B9GEJNWQ8RGQDXRFYAWRTP
+      # All MA media_player entity_ids
+      ma_entities_from_integration: >-
+        {{
+          (integration_entities('music_assistant') | default([]))
+          | select('match','^media_player\.')
+          | list
+        }}
+      
+      # Optional: quick debug view of states for logging
+      ma_states_debug: >-
+        {{
+          expand(ma_entities_from_integration)
+          | map(attribute='entity_id')
+          | list
+        }} -> {{
+          expand(ma_entities_from_integration)
+          | map(attribute='state')
+          | list
+        }}
+      
+      # Who's playing? (expand -> filter -> map ids)
+      ma_playing_entities_integr: >-
+        {{
+          expand(ma_entities_from_integration)
+          | selectattr('state','in',['playing'])
+          | map(attribute='entity_id')
+          | list
+        }}
+
+      ma_playing_entities_fallback: |-
+        {% set out = [] %} {% for e in states.media_player %}
+          {% set is_playing = (e.state == 'playing') %}
+          {% set id = e.entity_id %}
+          {% set src = (e.attributes.source | default('', true) | lower) %}
+          {% set app = (e.attributes.app_name | default('', true) | lower) %}
+          {% set name = (e.name | default('', true) | lower) %}
+          {% set attr_keys = (e.attributes.keys() | list | join(',') | lower) %}
+          {% set looks_ma = id.startswith('media_player.mass_')
+                            or ('_mass_' in id)
+                            or ('music assistant' in src)
+                            or ('music assistant' in app)
+                            or ('music assistant' in name)
+                            or ('mass_' in attr_keys)
+                            or (' mass ' in (' ' ~ attr_keys ~ ' ')) %}
+          {% if is_playing and looks_ma %}
+            {% set out = out + [ id ] %}
+          {% endif %}
+        {% endfor %} {{ out }}
+      ma_playing_entities: >-
+        {% set cand = ma_playing_entities_integr %} {{ cand if (cand | count) >
+        0 else ma_playing_entities_fallback }}
+      use_entities_flag: "{{ (not area_requested_flag) and (ma_playing_entities | count > 0) }}"
   - action: system_log.write
     data:
       level: warning
-      message: >
-        DEBUG Play Music → cmd="{{ trigger.command }}", area_spoken="{{
-        area_spoken }}", names={{ area_names }}, ids={{ area_ids_resolved }},
-        playlist="{{ resolved_playlist }}"
-  - repeat:
-      for_each: "{{ area_ids_resolved }}"
-      sequence:
-        - action: music_assistant.play_media
-          target:
-            area_id: "{{ repeat.item }}"
-          data:
-            media_type: playlist
-            media_id: "{{ resolved_playlist }}"
-            enqueue: replace
+      message: >-
+        ROUTE → area_requested_flag={{ area_requested_flag }},
+        use_entities_flag={{ use_entities_flag }},
+        ma_entities_from_integration={{ ma_entities_from_integration | tojson
+        }}, ma_playing_entities={{ ma_playing_entities | tojson }}, area_ids={{
+        area_ids_resolved | tojson }}, search="{{ search_query }}"
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ search_query | length > 0 }}"
+        sequence:
+          - action: music_assistant.search
+            response_variable: ma_search
+            data:
+              limit: 10
+              config_entry_id: "{{ ma_config_entry_id }}"
+              media_type:
+                - artist
+                - album
+                - playlist
+                - track
+              name: "{{ search_query }}"
+          - variables:
+              matching_name: >-
+                {% set ns = namespace(name='') %} {% set norm = search_query |
+                lower | trim %} {% for grp in
+                ['artists','albums','tracks','playlists'] %}
+                  {% if ns.name == '' %}
+                    {% for it in (ma_search[grp] | default([])) %}
+                      {% if (it.name | lower | trim) == norm %}
+                        {% set ns.name = it.name %}{% break %}
+                      {% endif %}
+                    {% endfor %}
+                  {% endif %}
+                {% endfor %} {{ ns.name }}
+          - variables:
+              matching_media_type: >-
+                {% set ns = namespace(type='') %} {% set norm = search_query |
+                lower | trim %} {% for grp in
+                ['artists','albums','tracks','playlists'] %}
+                  {% if ns.type == '' %}
+                    {% for it in (ma_search[grp] | default([])) %}
+                      {% if (it.name | lower | trim) == norm %}
+                        {% set mt = it.media_type %}
+                        {% set ns.type = mt if mt is string else (mt.value | default(mt | string | regex_replace(".*'([^']+)'.*", "\1"))) %}
+                        {% break %}
+                      {% endif %}
+                    {% endfor %}
+                  {% endif %}
+                {% endfor %} {{ ns.type }}
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ matching_name != '' and matching_media_type != '' }}"
+                sequence:
+                  - action: system_log.write
+                    data:
+                      level: info
+                      message: >-
+                        MATCH → type="{{ matching_media_type }}", name="{{
+                        matching_name }}"
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ area_requested_flag }}"
+                        sequence:
+                          - repeat:
+                              for_each: "{{ area_ids_resolved }}"
+                              sequence:
+                                - action: music_assistant.play_media
+                                  target:
+                                    area_id: "{{ repeat.item }}"
+                                  data:
+                                    media_type: "{{ matching_media_type }}"
+                                    media_id: "{{ matching_name }}"
+                                    enqueue: replace
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ use_entities_flag }}"
+                        sequence:
+                          - repeat:
+                              for_each: "{{ ma_playing_entities }}"
+                              sequence:
+                                - action: music_assistant.play_media
+                                  target:
+                                    entity_id: "{{ repeat.item }}"
+                                  data:
+                                    media_type: "{{ matching_media_type }}"
+                                    media_id: "{{ matching_name }}"
+                                    enqueue: replace
+                    default:
+                      - repeat:
+                          for_each: "{{ area_ids_resolved }}"
+                          sequence:
+                            - action: music_assistant.play_media
+                              target:
+                                area_id: "{{ repeat.item }}"
+                              data:
+                                media_type: "{{ matching_media_type }}"
+                                media_id: "{{ matching_name }}"
+                                enqueue: replace
+    default:
+      - action: system_log.write
+        data:
+          level: info
+          message: >-
+            EMPTY SEARCH QUERY → Falling back to playlist "{{ resolved_playlist
+            }}"
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ area_requested_flag }}"
+            sequence:
+              - repeat:
+                  for_each: "{{ area_ids_resolved }}"
+                  sequence:
+                    - action: music_assistant.play_media
+                      target:
+                        area_id: "{{ repeat.item }}"
+                      data:
+                        media_type: playlist
+                        media_id: "{{ resolved_playlist }}"
+                        enqueue: replace
+          - conditions:
+              - condition: template
+                value_template: "{{ use_entities_flag }}"
+            sequence:
+              - repeat:
+                  for_each: "{{ ma_playing_entities }}"
+                  sequence:
+                    - action: music_assistant.play_media
+                      target:
+                        entity_id: "{{ repeat.item }}"
+                      data:
+                        media_type: playlist
+                        media_id: "{{ resolved_playlist }}"
+                        enqueue: replace
+        default:
+          - repeat:
+              for_each: "{{ area_ids_resolved }}"
+              sequence:
+                - action: music_assistant.play_media
+                  target:
+                    area_id: "{{ repeat.item }}"
+                  data:
+                    media_type: playlist
+                    media_id: "{{ resolved_playlist }}"
+                    enqueue: replace
 mode: single
