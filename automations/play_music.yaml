@@ -1,0 +1,175 @@
+alias: Play Music
+description: ""
+triggers:
+  - trigger: conversation
+    command:
+      - play music
+      - play {playlist}
+      - play {playlist} music
+      - play music in {area}
+      - play music in the {area}
+      - play {playlist} in {area}
+      - play {playlist} music in {area}
+      - play {playlist} in the {area}
+      - play {playlist} music in the {area}
+      - play music on {area}
+      - play {playlist} on {area}
+      - play {playlist} music on {area}
+actions:
+  - variables:
+      convo_text: |
+        {{
+          (
+            trigger.sentence
+            | default(trigger.user_input.text, true)
+            | default('', true)
+          )
+        }}
+      area_spoken_raw: "{{ trigger.slots.area | default('') }}"
+      area_guess_from_phrase: >
+        {% set cmd = (convo_text | lower) %} {% set hits = cmd |
+        regex_findall('(?:^|\\s)(?:in|on)\\s+(?:the\\s+)?([a-z0-9
+        _-]+?)(?=[.!?,]|$)') %} {{ (hits | first) | default('') }}
+      area_spoken: >
+        {% set a = area_spoken_raw | trim %} {% if a %}{{ a }} {% elif
+        area_guess_from_phrase | trim %}{{ area_guess_from_phrase }} {% else
+        %}Kitchen{% endif %}
+      area_aliases: |
+        {{
+          {
+            "kitchen": ["Kitchen"],
+            "living room": ["Living Room"],
+            "livingroom": ["Living Room"],
+            "downstairs": ["Living Room"],
+            "all": ["Kitchen","Living Room"],
+            "everywhere": ["Kitchen","Living Room"],
+            "house": ["Kitchen","Living Room"]
+          }
+        }}
+      area_normalized: |
+        {% set raw = area_spoken | lower %} {{
+          raw
+          | replace(' the ', ' ')
+          | replace(' & ', ' and ')
+          | replace('&', ' and ')
+          | replace(' and ', ',')
+          | replace(';', ',')
+          | replace('|', ',')
+          | replace(' ,', ',')
+          | replace(', ', ',')
+          | trim(',')
+        }}
+      area_names: >
+        {% set aliases = area_aliases %} {% set keys =
+        area_normalized.split(',') | map('trim') | reject('equalto','') | list
+        %} {% set matches = [] %} {% for k in keys %}
+          {% if k in aliases %}
+            {% set matches = matches | union(aliases[k]) %}
+          {% endif %}
+        {% endfor %} {% if matches | count == 0 %}
+          ["{{ area_spoken | title }}"]
+        {% else %}
+          {{ matches | unique | list }}
+        {% endif %}
+      area_ids_resolved: >
+        {% set ids = area_names | map('area_id') | reject('equalto', None) |
+        list %} {% if ids | count == 0 %}
+          {% set fallback = area_id('Kitchen') %}
+          {% if fallback %} [fallback] {% else %} [] {% endif %}
+        {% else %}
+          {{ ids }}
+        {% endif %}
+      raw_playlist: "{{ trigger.slots.playlist | default(convo_text) }}"
+      playlist_key: >
+        {% set s = (raw_playlist | lower) %} {% set s = s |
+        regex_replace('\\s+(?:in|on)\\s+.*$', '') %} {{
+          s
+            | replace(' playlist','')
+            | replace(' music','')
+            | replace(' the ',' ')
+            | replace("'", '')
+            | trim
+        }}
+      playlist_catalog:
+        - name: Liked from Radio
+          aliases:
+            - ""
+            - default
+            - liked
+            - favorites
+            - favourites
+        - name: "'50s Party"
+          aliases:
+            - 50s
+            - 50s Party
+            - fifties
+        - name: 60s Party
+          aliases:
+            - 60s
+            - 60s Party
+            - sixties
+        - name: 70s 100 Hits
+          aliases:
+            - 70s
+            - 70s 100 Hits
+            - seventies
+        - name: 80s Flash
+          aliases:
+            - 80s
+            - 80s flash
+            - eighties
+        - name: 90s Vibes
+          aliases:
+            - 90s
+            - 90s vibes
+            - nineties
+        - name: 2000s Party
+          aliases:
+            - 2000s
+            - 2000s party
+            - two thousands
+        - name: 2010s Party
+          aliases:
+            - 2010s
+            - 2010s party
+            - twenty tens
+            - two thousand tens
+            - two thousand ten
+      resolved_playlist: >
+        {% set default = "Liked from Radio" %} {% set key = playlist_key %} {%
+        set found = (playlist_catalog
+            | selectattr('aliases','contains', key)
+            | map(attribute='name')
+            | first) %}
+        {% if found %}
+          {{ found }}
+        {% else %}
+          {% set decade_map = {
+            '50s': "'50s Party",
+            '60s': "60s Party",
+            '70s': "70s 100 Hits",
+            '80s': "80s Flash",
+            '90s': "90s Vibes",
+            '2000s': "2000s Party",
+            '2010s': "2010s Party"
+          } %}
+          {{ decade_map.get(key, default) }}
+        {% endif %}
+  - action: system_log.write
+    data:
+      level: warning
+      message: >
+        DEBUG Play Music → cmd="{{ trigger.command }}", area_spoken="{{
+        area_spoken }}", names={{ area_names }}, ids={{ area_ids_resolved }},
+        playlist="{{ resolved_playlist }}"
+  - repeat:
+      for_each: "{{ area_ids_resolved }}"
+      sequence:
+        - action: music_assistant.play_media
+          target:
+            area_id: "{{ repeat.item }}"
+          data:
+            media_type: playlist
+            media_id: "{{ resolved_playlist }}"
+            enqueue: replace
+mode: single

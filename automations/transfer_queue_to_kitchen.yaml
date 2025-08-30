@@ -1,0 +1,27 @@
+alias: Transfer queue to kitchen
+description: ""
+triggers:
+  - trigger: conversation
+    command:
+      - Transfer queue to kitchen
+      - Transfer music to kitchen
+      - Transfer to kitchen
+conditions: []
+actions:
+  - if:
+      - condition: device
+        device_id: 462fd32e34fca4227bcfcfd3305e2acc
+        domain: media_player
+        entity_id: b479d6f53b0b04943ea50829e8387741
+        type: is_playing
+    then:
+      - action: music_assistant.transfer_queue
+        metadata: {}
+        data:
+          source_player: media_player.living_room_speaker_2
+          auto_play: true
+        target:
+          area_id: kitchen
+    else:
+      - set_conversation_response: No music playing in living room
+mode: single
